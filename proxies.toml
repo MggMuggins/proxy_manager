@@ -1,0 +1,5 @@
+[[Proxy]]
+LocalPort = 208022
+Remote = "pi.lan"
+RemotePort = 22
+
