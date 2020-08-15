@@ -9,7 +9,12 @@ import (
     "strconv"
     "strings"
     "time"
+    
+    "github.com/rs/zerolog"
+    "github.com/rs/zerolog/log"
 )
+
+const BACKOFF_SLEEP = 2 * time.Minute
 
 type Proxies map[int]Proxy
 
@@ -74,13 +79,19 @@ func (self *Proxy) Cmd() *exec.Cmd {
 }
 
 func (self *Proxy) Run(id int, deaths chan int) {
-    fmt.Printf("Starting Proxy: %s\n", self)
+    log.Info().
+        Str("Proxy", self.String()).
+        Msg("Starting")
     cmd := self.Cmd()
     out, err := cmd.CombinedOutput()
     if err != nil {
-        fmt.Printf("Warn: proxy failed: %s\n", err)
+        log.Warn().
+            Err(err).
+            Msg("Proxy failed")
         if len(out) > 0 {
-            fmt.Printf("Stdout + Stderr was:\n%s", out)
+            log.Info().
+                Str("StdoutAndStderr", string(out)).
+                Msg("")
         }
     }
     
@@ -92,13 +103,15 @@ func (self Proxy) String() string {
 }
 
 func main() {
+    log.Logger = log.Output(zerolog.ConsoleWriter { Out: os.Stderr })
+    
     var err error
     defer func() {
         if err != nil {
-            fmt.Printf("error: %s\n", err)
-            os.Exit(1)
+            log.Fatal().Err(err).Msg("Failed to start daemon")
         }
     }()
+    
     
     ssh := flag.Bool(
         "e",
@@ -140,11 +153,14 @@ func main() {
         if restart_count <= 3 {
             go proxy.Run(died, dead)
         } else {
-            fmt.Printf("Too many restarts for %s, sleeping restart loop\n", proxy)
+            log.Warn().
+                Str("Proxy", proxy.String()).
+                Dur("BackoffFor", BACKOFF_SLEEP).
+                Msg("Too many restarts")
             delete(recent_restarts, died)
             // Wait a while before we try restarting again
             go func() {
-                time.Sleep(2 * time.Minute)
+                time.Sleep(BACKOFF_SLEEP)
                 proxy.Run(died, dead)
             }()
         }
