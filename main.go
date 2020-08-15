@@ -134,7 +134,10 @@ func main() {
     dbg := parser.FlagCounter("v", "verbose", &argparse.Options { Help: "Enable verbose logging" })
     file := parser.String("p", "proxies", &argparse.Options { Default: "proxies.list", Help: ARG_HELP_PROXIES })
     err = parser.Parse(os.Args)
-    if err != nil { return }
+    if err != nil {
+        err = fmt.Errorf("%s, use -h for help", err)
+        return
+    }
     
     zerolog.SetGlobalLevel(zerolog.InfoLevel - zerolog.Level(*dbg))
     

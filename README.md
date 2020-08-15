@@ -5,12 +5,10 @@ and the tool will ensure that a daemon is running for each proxy mapping.
 
 ## Usage
 ```sh
-# Reads standard tcp mappings from proxies.list
+# Reads standard tcp mappings from 'proxies.list'
 proxy_manager
-# Alternate proxies.list
-proxy_manager -p path/to/file
-# Use ssh for whatever proxy list is defined instead of tcp
-proxy_manager -e
+# Use -h to see more options
+proxy_manager -h
 ```
 
 ### File format
