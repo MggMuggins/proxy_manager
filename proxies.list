@@ -1,7 +1,6 @@
 # A comment line!
 #
-# I guess blocks should work
-# Do blank lines?
+# Empty comment lines and empty lines are allowed
 
 3010:mac-mini.lan:22
 2022:pi.lan:22 # Comments after data lines should also work

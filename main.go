@@ -14,7 +14,10 @@ import (
     "github.com/rs/zerolog/log"
 )
 
-const BACKOFF_SLEEP = 2 * time.Minute
+const (
+    BACKOFF_SLEEP = 2 * time.Minute
+    RESTART_MAX = 3
+)
 
 type Proxies map[int]Proxy
 
@@ -26,10 +29,9 @@ func ParseProxyFile(path string, encrypted bool) (self Proxies, err error) {
     self = map[int]Proxy {}
     
     scanner := bufio.NewScanner(file)
-    for line_num := 0; scanner.Scan(); line_num += 1 {
+    for line_num := 1; scanner.Scan(); line_num += 1 {
         line := strings.TrimSpace(scanner.Text())
         
-        // Ignore comment lines
         if strings.HasPrefix(line, "#") || line == "" {
             continue
         }
@@ -37,7 +39,8 @@ func ParseProxyFile(path string, encrypted bool) (self Proxies, err error) {
         // Allow comments on partial lines
         content := strings.TrimSpace(strings.Split(line, "#")[0])
         
-        self[line_num], err = ParseProxy(content, encrypted)
+        // Use the line num for the id; no sense iterating again
+        self[line_num], err = ParseProxy(content, line_num, encrypted)
         if err != nil {
             err = fmt.Errorf("%s: line %d: %s", path, line_num, err)
             return
@@ -47,20 +50,32 @@ func ParseProxyFile(path string, encrypted bool) (self Proxies, err error) {
 }
 
 type Proxy struct {
+    // proxy file fields
     LocalPort  int64
     Remote     string
     RemotePort int64
+    
+    // meta runtime fields
     Encrypted  bool
+    Id         int
 }
 
-func ParseProxy(s string, encrypted bool) (self Proxy, err error) {
+func ParseProxy(s string, id int, encrypted bool) (self Proxy, err error) {
+    self.Encrypted = encrypted
+    self.Id = id
+    
     parts := strings.Split(s, ":")
     
     self.LocalPort, err = strconv.ParseInt(parts[0], 0, 64)
     if err != nil { return }
+    
     self.Remote = parts[1]
+    if self.Remote == "" {
+        err = fmt.Errorf("Remote was empty")
+        return
+    }
+    
     self.RemotePort, err = strconv.ParseInt(parts[2], 0, 64)
-    self.Encrypted = encrypted
     return
 }
 
@@ -78,24 +93,22 @@ func (self *Proxy) Cmd() *exec.Cmd {
     }
 }
 
-func (self *Proxy) Run(id int, deaths chan int) {
-    log.Info().
-        Str("Proxy", self.String()).
+func (self *Proxy) Run(deaths chan int) {
+    log.Info().Str("Proxy", self.String()).
         Msg("Starting")
+    
     cmd := self.Cmd()
     out, err := cmd.CombinedOutput()
     if err != nil {
-        log.Warn().
-            Err(err).
+        log.Warn().Err(err).
             Msg("Proxy failed")
+        
         if len(out) > 0 {
-            log.Info().
-                Str("StdoutAndStderr", string(out)).
-                Msg("")
+            log.Info().Str("StdoutAndStderr", string(out)).Msg("")
         }
     }
     
-    deaths <- id
+    deaths <- self.Id
 }
 
 func (self Proxy) String() string {
@@ -132,6 +145,7 @@ func main() {
     proxies, err := ParseProxyFile(*file, *ssh)
     if err != nil { return }
     
+    // Proxy.Run() posts its ID to this channel when its subprocess ends
     dead := make(chan int, len(proxies))
     
     // Push all the IDs to the channel to indicate that they are dead and need to be started
@@ -142,26 +156,22 @@ func main() {
     recent_restarts := map[int]int {}
     
     for died := range dead {
-        restart_count, restarted := recent_restarts[died]
-        if restarted {
-            recent_restarts[died] += 1
-        } else {
-            recent_restarts[died] = 1
-        }
-        
+        recent_restarts[died] += 1
         proxy := proxies[died]
-        if restart_count <= 3 {
-            go proxy.Run(died, dead)
+        
+        if recent_restarts[died] <= RESTART_MAX {
+            go proxy.Run(dead)
         } else {
             log.Warn().
                 Str("Proxy", proxy.String()).
                 Dur("BackoffFor", BACKOFF_SLEEP).
+                Int("MaxRestarts", RESTART_MAX).
                 Msg("Too many restarts")
             delete(recent_restarts, died)
             // Wait a while before we try restarting again
             go func() {
                 time.Sleep(BACKOFF_SLEEP)
-                proxy.Run(died, dead)
+                proxy.Run(dead)
             }()
         }
     }
