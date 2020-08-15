@@ -168,8 +168,9 @@ func main() {
                 Int("MaxRestarts", RESTART_MAX).
                 Msg("Too many restarts")
             delete(recent_restarts, died)
-            // Wait a while before we try restarting again
+            
             go func() {
+                // Wait a while before we try restarting again
                 time.Sleep(BACKOFF_SLEEP)
                 proxy.Run(dead)
             }()
