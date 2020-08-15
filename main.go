@@ -1,18 +1,16 @@
 package main
 
 import (
+    "flag"
     "fmt"
     "os"
     "os/exec"
-    //"time"
     "github.com/pelletier/go-toml"
 )
 
 type Config struct {
     Proxy []Proxy
 }
-
-
 
 func NewConfig(path string) (cfg Config, err error) {
     cfg = Config {}
@@ -37,7 +35,6 @@ type Proxy struct {
 }
 
 func (self *Proxy) Run(id int, deaths chan int) {
-    //time.Sleep(10 * time.Second)
     tcp_src := fmt.Sprintf("tcp-listen:%d,reuseaddr,fork", self.LocalPort)
     tcp_sink := fmt.Sprintf("tcp:%s:%d", self.Remote, self.RemotePort)
     
@@ -64,21 +61,28 @@ func main() {
         }
     }()
     
-    cfg, err := NewConfig("proxies.toml")
+    //ssh := args.Bool("e", false, "Set up an encrypted tunnel using ssh instead of plain tcp")
+    cfg_file := flag.String("p", "proxies.toml", "TOML file with list of proxies to ensure")
+    flag.Parse()
+    
+    cfg, err := NewConfig(*cfg_file)
     if err != nil { return }
     
-    proxies := map[int]Proxy{}
-    deaths := make(chan int, len(cfg.Proxy))
+    proxies := map [int]Proxy {}
+    dead := make(chan int, len(cfg.Proxy))
     
+    // Set up the main thread's map of proxies with their IDs, and push all the
+    //  IDs to the channel to indicate that they are dead and need to be started
     for i, proxy := range cfg.Proxy {
         proxies[i] = proxy
-        go proxy.Run(i, deaths)
+        dead <- i
     }
     
+    // Wait on the channel to get any daemons that need to be started
     for {
-        died := <-deaths
+        died := <-dead
         proxy := proxies[died]
-        go proxy.Run(died, deaths)
+        go proxy.Run(died, dead)
     }
 }
 
