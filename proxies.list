@@ -1,1 +1,8 @@
-22222222:pi.lan:22
+# A comment line!
+#
+# I guess blocks should work
+# Do blank lines?
+
+3010:mac-mini.lan:22
+2022:pi.lan:22 # Comments after data lines should also work
+

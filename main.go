@@ -8,6 +8,7 @@ import (
     "os/exec"
     "strconv"
     "strings"
+    "time"
 )
 
 type Proxies map[int]Proxy
@@ -24,12 +25,12 @@ func ParseProxyFile(path string, encrypted bool) (self Proxies, err error) {
         line := strings.TrimSpace(scanner.Text())
         
         // Ignore comment lines
-        if strings.HasPrefix(line, "#") {
+        if strings.HasPrefix(line, "#") || line == "" {
             continue
         }
         
         // Allow comments on partial lines
-        content := strings.Split(line, "#")[0]
+        content := strings.TrimSpace(strings.Split(line, "#")[0])
         
         self[line_num], err = ParseProxy(content, encrypted)
         if err != nil {
@@ -60,7 +61,11 @@ func ParseProxy(s string, encrypted bool) (self Proxy, err error) {
 
 func (self *Proxy) Cmd() *exec.Cmd {
     if self.Encrypted {
-        return exec.Command("ssh", "-L", self.String(), self.Remote)
+        return exec.Command("ssh",
+            "-o", "BatchMode=yes",
+            "-L", self.String(),
+            self.Remote,
+        )
     } else {
         tcp_src := fmt.Sprintf("tcp-listen:%d,reuseaddr,fork", self.LocalPort)
         tcp_sink := fmt.Sprintf("tcp:%s:%d", self.Remote, self.RemotePort)
@@ -71,15 +76,18 @@ func (self *Proxy) Cmd() *exec.Cmd {
 func (self *Proxy) Run(id int, deaths chan int) {
     fmt.Printf("Starting Proxy: %s\n", self)
     cmd := self.Cmd()
-    err := cmd.Run()
+    out, err := cmd.CombinedOutput()
     if err != nil {
         fmt.Printf("Warn: proxy failed: %s\n", err)
+        if len(out) > 0 {
+            fmt.Printf("Stdout + Stderr was:\n%s", out)
+        }
     }
     
     deaths <- id
 }
 
-func (self *Proxy) String() string {
+func (self Proxy) String() string {
     return fmt.Sprintf("%d:%s:%d", self.LocalPort, self.Remote, self.RemotePort)
 }
 
@@ -104,7 +112,7 @@ func main() {
         "file with a list of proxies to ensure\n" +
         "Format:\n" +
         "  Comment lines begin with '#'\n" +
-        "  Other lines are formatted as <local_port>:<remote>:<remote_port>",
+        "  Other lines are formatted as <local_port>:<remote>:<remote_port>\n",
     )
     flag.Parse()
     
@@ -118,11 +126,28 @@ func main() {
         dead <- id
     }
     
-    // Wait on the channel to get any daemons that need to be started
-    for {
-        died := <-dead
+    recent_restarts := map[int]int {}
+    
+    for died := range dead {
+        restart_count, restarted := recent_restarts[died]
+        if restarted {
+            recent_restarts[died] += 1
+        } else {
+            recent_restarts[died] = 1
+        }
+        
         proxy := proxies[died]
-        go proxy.Run(died, dead)
+        if restart_count <= 3 {
+            go proxy.Run(died, dead)
+        } else {
+            fmt.Printf("Too many restarts for %s, sleeping restart loop\n", proxy)
+            delete(recent_restarts, died)
+            // Wait a while before we try restarting again
+            go func() {
+                time.Sleep(2 * time.Minute)
+                proxy.Run(died, dead)
+            }()
+        }
     }
 }
 
