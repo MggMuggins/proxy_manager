@@ -2,7 +2,6 @@ package main
 
 import (
     "bufio"
-    "flag"
     "fmt"
     "os"
     "os/exec"
@@ -10,11 +9,15 @@ import (
     "strings"
     "time"
     
+    "github.com/akamensky/argparse"
     "github.com/rs/zerolog"
     "github.com/rs/zerolog/log"
 )
 
 const (
+    ARG_HELP = "Start and maintain tcp or ssh port forwards"
+    ARG_HELP_SSH = "Use ssh instead of plain tcp (the default) for port-forwarding"
+    ARG_HELP_PROXIES = "File with a list of proxies to ensure"
     BACKOFF_SLEEP = 2 * time.Minute
     RESTART_MAX = 3
 )
@@ -98,6 +101,7 @@ func (self *Proxy) Run(deaths chan int) {
         Msg("Starting")
     
     cmd := self.Cmd()
+    log.Debug().Strs("Args", cmd.Args).Msg("Spawning Process")
     out, err := cmd.CombinedOutput()
     if err != nil {
         log.Warn().Err(err).
@@ -125,22 +129,14 @@ func main() {
         }
     }()
     
+    parser := argparse.NewParser("proxy_manager", ARG_HELP)
+    ssh := parser.Flag("s", "secure", &argparse.Options { Help: ARG_HELP_SSH })
+    dbg := parser.FlagCounter("v", "verbose", &argparse.Options { Help: "Enable verbose logging" })
+    file := parser.String("p", "proxies", &argparse.Options { Default: "proxies.list", Help: ARG_HELP_PROXIES })
+    err = parser.Parse(os.Args)
+    if err != nil { return }
     
-    ssh := flag.Bool(
-        "e",
-        false,
-        "Set up an encrypted tunnel using ssh instead of plain tcp (the default)\n" +
-        "ssh needs to be configured to connect to all the hosts in the proxy list",
-    )
-    file := flag.String(
-        "p",
-        "proxies.list",
-        "file with a list of proxies to ensure\n" +
-        "Format:\n" +
-        "  Comment lines begin with '#'\n" +
-        "  Other lines are formatted as <local_port>:<remote>:<remote_port>\n",
-    )
-    flag.Parse()
+    zerolog.SetGlobalLevel(zerolog.InfoLevel - zerolog.Level(*dbg))
     
     proxies, err := ParseProxyFile(*file, *ssh)
     if err != nil { return }
