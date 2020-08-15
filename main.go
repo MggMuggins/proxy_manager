@@ -1,45 +1,76 @@
 package main
 
 import (
+    "bufio"
     "flag"
     "fmt"
     "os"
     "os/exec"
-    "github.com/pelletier/go-toml"
+    "strconv"
+    "strings"
 )
 
-type Config struct {
-    Proxy []Proxy
-}
+type Proxies map[int]Proxy
 
-func NewConfig(path string) (cfg Config, err error) {
-    cfg = Config {}
-    
-    cfg_file, err := os.Open(path)
-    defer cfg_file.Close()
+func ParseProxyFile(path string, encrypted bool) (self Proxies, err error) {
+    file, err := os.Open(path)
     if err != nil { return }
+    defer file.Close()
     
-    decoder := toml.NewDecoder(cfg_file)
+    self = map[int]Proxy {}
     
-    err = decoder.Decode(&cfg)
-    if err != nil {
-        err = fmt.Errorf("failed to parse %s: %s", path, err)
+    scanner := bufio.NewScanner(file)
+    for line_num := 0; scanner.Scan(); line_num += 1 {
+        line := strings.TrimSpace(scanner.Text())
+        
+        // Ignore comment lines
+        if strings.HasPrefix(line, "#") {
+            continue
+        }
+        
+        // Allow comments on partial lines
+        content := strings.Split(line, "#")[0]
+        
+        self[line_num], err = ParseProxy(content, encrypted)
+        if err != nil {
+            err = fmt.Errorf("%s: line %d: %s", path, line_num, err)
+            return
+        }
     }
     return
 }
 
 type Proxy struct {
-    LocalPort  int
+    LocalPort  int64
     Remote     string
-    RemotePort int
+    RemotePort int64
+    Encrypted  bool
+}
+
+func ParseProxy(s string, encrypted bool) (self Proxy, err error) {
+    parts := strings.Split(s, ":")
+    
+    self.LocalPort, err = strconv.ParseInt(parts[0], 0, 64)
+    if err != nil { return }
+    self.Remote = parts[1]
+    self.RemotePort, err = strconv.ParseInt(parts[2], 0, 64)
+    self.Encrypted = encrypted
+    return
+}
+
+func (self *Proxy) Cmd() *exec.Cmd {
+    if self.Encrypted {
+        return exec.Command("ssh", "-L", self.String(), self.Remote)
+    } else {
+        tcp_src := fmt.Sprintf("tcp-listen:%d,reuseaddr,fork", self.LocalPort)
+        tcp_sink := fmt.Sprintf("tcp:%s:%d", self.Remote, self.RemotePort)
+        return exec.Command("socat", tcp_src, tcp_sink)
+    }
 }
 
 func (self *Proxy) Run(id int, deaths chan int) {
-    tcp_src := fmt.Sprintf("tcp-listen:%d,reuseaddr,fork", self.LocalPort)
-    tcp_sink := fmt.Sprintf("tcp:%s:%d", self.Remote, self.RemotePort)
-    
-    fmt.Printf("Starting Proxy: %s\n", self.Fmt())
-    cmd := exec.Command("socat", tcp_src, tcp_sink)
+    fmt.Printf("Starting Proxy: %s\n", self)
+    cmd := self.Cmd()
     err := cmd.Run()
     if err != nil {
         fmt.Printf("Warn: proxy failed: %s\n", err)
@@ -48,7 +79,7 @@ func (self *Proxy) Run(id int, deaths chan int) {
     deaths <- id
 }
 
-func (self *Proxy) Fmt() (string) {
+func (self *Proxy) String() string {
     return fmt.Sprintf("%d:%s:%d", self.LocalPort, self.Remote, self.RemotePort)
 }
 
@@ -61,21 +92,30 @@ func main() {
         }
     }()
     
-    //ssh := args.Bool("e", false, "Set up an encrypted tunnel using ssh instead of plain tcp")
-    cfg_file := flag.String("p", "proxies.toml", "TOML file with list of proxies to ensure")
+    ssh := flag.Bool(
+        "e",
+        false,
+        "Set up an encrypted tunnel using ssh instead of plain tcp (the default)\n" +
+        "ssh needs to be configured to connect to all the hosts in the proxy list",
+    )
+    file := flag.String(
+        "p",
+        "proxies.list",
+        "file with a list of proxies to ensure\n" +
+        "Format:\n" +
+        "  Comment lines begin with '#'\n" +
+        "  Other lines are formatted as <local_port>:<remote>:<remote_port>",
+    )
     flag.Parse()
     
-    cfg, err := NewConfig(*cfg_file)
+    proxies, err := ParseProxyFile(*file, *ssh)
     if err != nil { return }
     
-    proxies := map [int]Proxy {}
-    dead := make(chan int, len(cfg.Proxy))
+    dead := make(chan int, len(proxies))
     
-    // Set up the main thread's map of proxies with their IDs, and push all the
-    //  IDs to the channel to indicate that they are dead and need to be started
-    for i, proxy := range cfg.Proxy {
-        proxies[i] = proxy
-        dead <- i
+    // Push all the IDs to the channel to indicate that they are dead and need to be started
+    for id, _ := range proxies {
+        dead <- id
     }
     
     // Wait on the channel to get any daemons that need to be started
